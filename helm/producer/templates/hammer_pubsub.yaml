@@ -1,0 +1,18 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: pulsar-pubsub
+spec:
+  type: pubsub.pulsar
+  version: v1
+  metadata:
+  - name: host
+    value: {{ .Values.pulsar.host | quote }}
+  - name: token
+    secretKeyRef:
+      name: pulsar-auth-token # Matches your k8s secret name
+      key: token
+  - name: enableBatching
+    value: "true"
+  - name: batchingMaxMessages
+    value: "1000"
