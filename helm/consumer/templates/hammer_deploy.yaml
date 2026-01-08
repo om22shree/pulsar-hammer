@@ -27,9 +27,9 @@ spec:
         env:
         - name: MODE
           value: {{ .Values.mode | quote }}
+        # gRPC native readiness probe
         readinessProbe:
-          httpGet:
-            path: /healthz
+          grpc:
             port: 50051
           initialDelaySeconds: 15
           periodSeconds: 10
@@ -40,5 +40,5 @@ spec:
             cpu: "4"
             memory: "2Gi"
           requests:
-            cpu: "2"      
-            memory: "1Gi" 
+            cpu: "2"
+            memory: "1Gi"
