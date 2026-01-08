@@ -1,16 +1,17 @@
-replicaCount: 1 # Start with 1 to verify, scale to 10 for 150K TPS
-image: "your-registry/pulsar-hammer:latest"
+replicaCount: 1
+image: "om22shree/pulsar-hammer:v1"
 mode: "producer" # Options: producer, consumer
+namespace: "pulsar"
 
 pulsar:
-  host: "pulsar-proxy.pulsar.svc.cluster.local:6650"
-  secretName: "pulsar-auth-token" # Name of the K8s secret you created
-  tokenKey: "token"              # The key inside that secret
+  host: "pulsar-mini-proxy.pulsar.svc.cluster.local:6650"
+  secretName: "pulsar-mini-token-admin" 
+  tokenKey: "TOKEN"              
 
 resources:
   limits:
-    cpu: "1"
-    memory: "1Gi"
+    cpu: "4"
+    memory: "2Gi"
   requests:
-    cpu: "500m"
-    memory: "512Mi"
+    cpu: "4"
+    memory: "2Gi"

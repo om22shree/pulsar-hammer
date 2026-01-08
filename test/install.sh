@@ -61,4 +61,10 @@ echo "WARN: 600s seconds is not often enough for pulsar to stabilise, you may ha
 sleep 5
 kubectl get po -A -w
 
+./bin/pulsar-admin topics create-partitioned-topic persistent://public/default/hammer-topic --partitions 16
+
+./bin/pulsar-admin topics set-message-ttl persistent://public/default/hammer-topic --ttl 5
+
+./bin/pulsar-admin topics set-backlog-quota persistent://public/default/hammer-topic --limit 5G --policy consumer_backlog_eviction
+
 echo "Now, go do your helm thing and run pulsar-hammer application"

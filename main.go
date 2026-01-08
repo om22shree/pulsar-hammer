@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
@@ -37,31 +38,34 @@ func main() {
 }
 
 func runProducer() {
-	// Dapr uses DAPR_GRPC_PORT env var automatically
 	daprClient, err := client.NewClient()
 	if err != nil {
 		log.Fatalf("failed to init dapr client: %v", err)
 	}
 	defer daprClient.Close()
 
-	ctx := context.Background()
-	// Strict limit: 15,000 TPS
-	limiter := rate.NewLimiter(rate.Limit(15000), 500)
+	limiter := rate.NewLimiter(rate.Limit(15000), 1000)
 
-	log.Println("PRODUCER: Targeting 15k TPS...")
+	sem := make(chan struct{}, 1000)
 
 	for {
-		limiter.Wait(ctx)
+		limiter.Wait(context.Background())
 
-		data := payloadPool.Get().([]byte)
-		// Fire-and-forget goroutine to maintain throughput
-		go func(p []byte) {
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+
+			p := payloadPool.Get().([]byte)
 			defer payloadPool.Put(p)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
 			err := daprClient.PublishEvent(ctx, "pulsar-pubsub", "hammer-topic", p)
 			if err != nil {
-				// At 15k TPS, we don't log every error to avoid IO bottleneck
+				log.Printf("Publish error: %v", err)
 			}
-		}(data)
+		}()
 	}
 }
 
@@ -77,7 +81,6 @@ func runConsumer(port string) {
 	}
 
 	if err := s.AddTopicEventHandler(sub, func(ctx context.Context, e *common.TopicEvent) (bool, error) {
-		// Log nothing to maintain high-speed drain
 		return false, nil
 	}); err != nil {
 		log.Fatalf("error adding topic handler: %v", err)

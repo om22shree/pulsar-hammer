@@ -1,5 +1,5 @@
 apiVersion: v2
-name: pulsar-hammer
+name: pulsar-hammer-consumer
 description: High-throughput Pulsar stress tester (Go + Dapr + Ambient)
 type: application
 version: 1.0.0
