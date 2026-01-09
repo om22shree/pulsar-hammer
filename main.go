@@ -18,6 +18,11 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
+const (
+	poolSize    = 10     // Number of concurrent gRPC connections to Dapr
+	logInterval = 100000 // Only log every 100k messages to save CPU
+)
+
 var (
 	payloadPool = sync.Pool{
 		New: func() any { return make([]byte, 10240) },
@@ -33,16 +38,17 @@ func main() {
 	}
 
 	if mode == "producer" {
-		log.Printf("PRODUCER: Starting health server on %s", appPort)
-		// 1. Manually open port for Producer to unblock the Dapr Sidecar seen in logs
+		log.Printf("PRODUCER: Initializing with %d parallel clients", poolSize)
+		// 1. Unblock sidecar
 		go startProducerHealthCheck(appPort)
 		
+		// 2. Wait for sidecar
 		time.Sleep(2 * time.Second)
-
+		
+		// 3. Run Producer
 		runProducer()
 	} else {
 		log.Printf("CONSUMER: Starting Dapr Service on %s", appPort)
-		// 4. Run the full Consumer logic
 		runConsumer(appPort)
 	}
 }
@@ -56,41 +62,54 @@ func startProducerHealthCheck(port string) {
 	hs := health.NewServer()
 	hs.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(gs, hs)
-	
 	if err := gs.Serve(lis); err != nil {
-		log.Printf("Producer health server error: %v", err)
+		log.Printf("Producer health server stopped: %v", err)
 	}
 }
 
 func runProducer() {
-	daprClient, err := client.NewClient()
-	if err != nil {
-		log.Fatalf("failed to init dapr client: %v", err)
+	// Create a pool of clients to break the gRPC single-connection limit
+	var clients []client.Client
+	for i := 0; i < poolSize; i++ {
+		c, err := client.NewClient()
+		if err != nil {
+			log.Fatalf("failed to init dapr client %d: %v", i, err)
+		}
+		clients = append(clients, c)
 	}
-	defer daprClient.Close()
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
 
-	limiter := rate.NewLimiter(rate.Limit(15000), 1000)
-	sem := make(chan struct{}, 1000)
+	// Target 15,000 TPS
+	limiter := rate.NewLimiter(rate.Limit(15000), 2000)
+	sem := make(chan struct{}, 2000) // Allow more burst concurrency
 
 	for {
 		limiter.Wait(context.Background())
 		sem <- struct{}{}
-		go func() {
+		
+		go func(id uint64) {
 			defer func() { <-sem }()
 			p := payloadPool.Get().([]byte)
 			defer payloadPool.Put(p)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// Rotate through the client pool
+			c := clients[id%poolSize]
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
-			err := daprClient.PublishEvent(ctx, "pulsar-pubsub", "hammer-topic", p)
-			if err != nil {
-				return
+			err := c.PublishEvent(ctx, "pulsar-pubsub", "hammer-topic", p)
+			if err == nil {
+				newVal := atomic.AddUint64(&messageCount, 1)
+				if newVal%logInterval == 0 {
+					log.Printf("PRODUCER: Sent %d messages total", newVal)
+				}
 			}
-			if atomic.AddUint64(&messageCount, 1)%10000 == 0 {
-				log.Printf("Published %d messages", atomic.LoadUint64(&messageCount))
-			}
-		}()
+		}(atomic.LoadUint64(&messageCount))
 	}
 }
 
@@ -106,8 +125,9 @@ func runConsumer(port string) {
 	}
 
 	err = s.AddTopicEventHandler(sub, func(ctx context.Context, e *common.TopicEvent) (bool, error) {
-		if atomic.AddUint64(&messageCount, 1)%10000 == 0 {
-			log.Printf("Consumed %d messages", atomic.LoadUint64(&messageCount))
+		newVal := atomic.AddUint64(&messageCount, 1)
+		if newVal%logInterval == 0 {
+			log.Printf("CONSUMER: Received %d messages total", newVal)
 		}
 		return false, nil
 	})
