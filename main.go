@@ -41,11 +41,8 @@ func main() {
 		log.Printf("PRODUCER: Initializing with %d parallel clients", poolSize)
 		// 1. Unblock sidecar
 		go startProducerHealthCheck(appPort)
-		
-		// 2. Wait for sidecar
 		time.Sleep(2 * time.Second)
-		
-		// 3. Run Producer
+	
 		runProducer()
 	} else {
 		log.Printf("CONSUMER: Starting Dapr Service on %s", appPort)
@@ -83,7 +80,6 @@ func runProducer() {
 		}
 	}()
 
-	// Target 15,000 TPS
 	limiter := rate.NewLimiter(rate.Limit(15000), 2000)
 	sem := make(chan struct{}, 2000) // Allow more burst concurrency
 

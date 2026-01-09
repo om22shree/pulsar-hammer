@@ -13,7 +13,18 @@ spec:
     secretKeyRef:
       name: {{ .Values.pulsar.secretName }}
       key: {{ .Values.pulsar.tokenKey }}
+
   - name: enableBatching
     value: "true"
   - name: batchingMaxMessages
-    value: "1000"
+    value: "5000"          # Increased from 1000 to handle higher volume per request
+  - name: batchingMaxSize
+    value: "4194304"       # 4MB max batch size
+  - name: batchingMaxPublishDelay
+    value: "10ms"          # Lower delay for more frequent flushes at high speed
+  
+  - name: maxPendingMessages
+    value: "20000"         # Buffer size for messages waiting for Pulsar ACKs
+
+  - name: internalQueueSize
+    value: "10000"         # Internal Dapr channel size for Pulsar events

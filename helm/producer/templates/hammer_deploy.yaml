@@ -19,6 +19,12 @@ spec:
         dapr.io/app-port: "50051"
         istio.io/dataplane-mode: "ambient"
         dapr.io/enable-app-health-check: "false"
+        dapr.io/sidecar-cpu-limit: "2.0"
+        dapr.io/sidecar-cpu-request: "1.0"
+        dapr.io/sidecar-memory-limit: "1Gi"
+        dapr.io/sidecar-memory-request: "512Mi"
+        dapr.io/sidecar-liveness-probe-delay-seconds: "15"
+        dapr.io/sidecar-readiness-probe-delay-seconds: "15"
     spec:
       containers:
       - name: hammer
@@ -27,10 +33,19 @@ spec:
         env:
         - name: MODE
           value: {{ .Values.mode | quote }}
+        - name: APP_PORT
+          value: "50051"
+        
+        readinessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
         resources:
           limits:
-            cpu: "4"
-            memory: "2Gi"
-          requests:
             cpu: "2"
             memory: "1Gi"
+          requests:
+            cpu: "1"
+            memory: "512Mi"
