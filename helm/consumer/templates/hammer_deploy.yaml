@@ -23,8 +23,9 @@ spec:
         dapr.io/sidecar-cpu-request: "1.0"
         dapr.io/sidecar-memory-limit: "1Gi"
         dapr.io/sidecar-memory-request: "512Mi"
-        dapr.io/sidecar-liveness-probe-delay-seconds: "15"
-        dapr.io/sidecar-readiness-probe-delay-seconds: "15"
+        dapr.io/sidecar-liveness-probe-delay-seconds: "60" # Give it a full minute
+        dapr.io/sidecar-readiness-probe-delay-seconds: "60"
+        dapr.io/sidecar-liveness-probe-period-seconds: "10"
     spec:
       containers:
       - name: hammer
