@@ -27,14 +27,14 @@ spec:
         env:
         - name: MODE
           value: {{ .Values.mode | quote }}
-        # gRPC native readiness probe
+        # BRUTE FORCE FIX: TCP Socket check
         readinessProbe:
-          grpc:
+          tcpSocket:
             port: 50051
-          initialDelaySeconds: 15
+          initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 5
+          failureThreshold: 3
         resources:
           limits:
             cpu: "4"
