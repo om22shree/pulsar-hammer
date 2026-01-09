@@ -22,7 +22,7 @@ var (
 	payloadPool = sync.Pool{
 		New: func() any { return make([]byte, 10240) },
 	}
-	publishCount uint64
+	messageCount uint64
 )
 
 func main() {
@@ -34,12 +34,15 @@ func main() {
 
 	if mode == "producer" {
 		log.Printf("PRODUCER: Starting health server on %s", appPort)
-		// 1. Manually open port for Producer to unblock Dapr Sidecar
+		// 1. Manually open port for Producer to unblock the Dapr Sidecar seen in logs
 		go startProducerHealthCheck(appPort)
+		
 		time.Sleep(2 * time.Second)
+
 		runProducer()
 	} else {
 		log.Printf("CONSUMER: Starting Dapr Service on %s", appPort)
+		// 4. Run the full Consumer logic
 		runConsumer(appPort)
 	}
 }
@@ -53,7 +56,7 @@ func startProducerHealthCheck(port string) {
 	hs := health.NewServer()
 	hs.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(gs, hs)
-
+	
 	if err := gs.Serve(lis); err != nil {
 		log.Printf("Producer health server error: %v", err)
 	}
@@ -84,8 +87,8 @@ func runProducer() {
 			if err != nil {
 				return
 			}
-			if atomic.AddUint64(&publishCount, 1)%10000 == 0 {
-				log.Printf("Published %d messages", atomic.LoadUint64(&publishCount))
+			if atomic.AddUint64(&messageCount, 1)%10000 == 0 {
+				log.Printf("Published %d messages", atomic.LoadUint64(&messageCount))
 			}
 		}()
 	}
@@ -103,8 +106,8 @@ func runConsumer(port string) {
 	}
 
 	err = s.AddTopicEventHandler(sub, func(ctx context.Context, e *common.TopicEvent) (bool, error) {
-		if atomic.AddUint64(&publishCount, 1)%10000 == 0 {
-			log.Printf("Consumed %d messages", atomic.LoadUint64(&publishCount))
+		if atomic.AddUint64(&messageCount, 1)%10000 == 0 {
+			log.Printf("Consumed %d messages", atomic.LoadUint64(&messageCount))
 		}
 		return false, nil
 	})
@@ -112,7 +115,6 @@ func runConsumer(port string) {
 		log.Fatalf("error adding topic handler: %v", err)
 	}
 
-	// s.Start() will block and handle the port listening
 	if err := s.Start(); err != nil {
 		log.Fatalf("failed to start consumer: %v", err)
 	}
