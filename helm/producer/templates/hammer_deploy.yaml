@@ -27,14 +27,6 @@ spec:
         env:
         - name: MODE
           value: {{ .Values.mode | quote }}
-        # BRUTE FORCE FIX: TCP Socket check
-        readinessProbe:
-          tcpSocket:
-            port: 50051
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
         resources:
           limits:
             cpu: "4"
