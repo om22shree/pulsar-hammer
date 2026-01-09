@@ -3,24 +3,26 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
 	daprd "github.com/dapr/go-sdk/service/grpc"
 	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 var (
-	// Pool of 10KB buffers to prevent GC death at high TPS
 	payloadPool = sync.Pool{
-		New: func() any {
-			b := make([]byte, 10240)
-			return b
-		},
+		New: func() any { return make([]byte, 10240) },
 	}
+	publishCount uint64
 )
 
 func main() {
@@ -31,9 +33,29 @@ func main() {
 	}
 
 	if mode == "producer" {
+		log.Printf("PRODUCER: Starting health server on %s", appPort)
+		// 1. Manually open port for Producer to unblock Dapr Sidecar
+		go startProducerHealthCheck(appPort)
+		time.Sleep(2 * time.Second)
 		runProducer()
 	} else {
+		log.Printf("CONSUMER: Starting Dapr Service on %s", appPort)
 		runConsumer(appPort)
+	}
+}
+
+func startProducerHealthCheck(port string) {
+	lis, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		log.Fatalf("Producer listener failed: %v", err)
+	}
+	gs := grpc.NewServer()
+	hs := health.NewServer()
+	hs.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	grpc_health_v1.RegisterHealthServer(gs, hs)
+
+	if err := gs.Serve(lis); err != nil {
+		log.Printf("Producer health server error: %v", err)
 	}
 }
 
@@ -45,16 +67,13 @@ func runProducer() {
 	defer daprClient.Close()
 
 	limiter := rate.NewLimiter(rate.Limit(15000), 1000)
-
 	sem := make(chan struct{}, 1000)
 
 	for {
 		limiter.Wait(context.Background())
-
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem }()
-
 			p := payloadPool.Get().([]byte)
 			defer payloadPool.Put(p)
 
@@ -63,7 +82,10 @@ func runProducer() {
 
 			err := daprClient.PublishEvent(ctx, "pulsar-pubsub", "hammer-topic", p)
 			if err != nil {
-				log.Printf("Publish error: %v", err)
+				return
+			}
+			if atomic.AddUint64(&publishCount, 1)%10000 == 0 {
+				log.Printf("Published %d messages", atomic.LoadUint64(&publishCount))
 			}
 		}()
 	}
@@ -72,7 +94,7 @@ func runProducer() {
 func runConsumer(port string) {
 	s, err := daprd.NewService(":" + port)
 	if err != nil {
-		log.Fatalf("failed to start gRPC service: %v", err)
+		log.Fatalf("failed to create dapr service: %v", err)
 	}
 
 	sub := &common.Subscription{
@@ -80,14 +102,18 @@ func runConsumer(port string) {
 		Topic:      "hammer-topic",
 	}
 
-	if err := s.AddTopicEventHandler(sub, func(ctx context.Context, e *common.TopicEvent) (bool, error) {
+	err = s.AddTopicEventHandler(sub, func(ctx context.Context, e *common.TopicEvent) (bool, error) {
+		if atomic.AddUint64(&publishCount, 1)%10000 == 0 {
+			log.Printf("Consumed %d messages", atomic.LoadUint64(&publishCount))
+		}
 		return false, nil
-	}); err != nil {
+	})
+	if err != nil {
 		log.Fatalf("error adding topic handler: %v", err)
 	}
 
-	log.Printf("CONSUMER: Listening on port %s", port)
+	// s.Start() will block and handle the port listening
 	if err := s.Start(); err != nil {
-		log.Fatalf("error starting service: %v", err)
+		log.Fatalf("failed to start consumer: %v", err)
 	}
 }
