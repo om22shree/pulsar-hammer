@@ -3,7 +3,7 @@ set -e
 
 # Create local minikube cluster
 minikube start \
-  --cpus=12 \
+  --cpus=18 \
   --memory=20384 \
   --disk-size=100g \
   --addons=dashboard,metrics-server \
@@ -52,7 +52,13 @@ helm upgrade --install pulsar-mini apache/pulsar \
     --values examples/values-minikube.yaml \
     --set extra.monitoring.enabled=false \
     --set victoria-metrics-operator.enabled=false \
-    --set victoria-metrics-k8s-stack.enabled=false
+    --set victoria-metrics-k8s-stack.enabled=false \
+    --set broker.resources.requests.cpu=2 \
+    --set broker.resources.limits.cpu=3 \
+    --set bookie.resources.requests.cpu=2 \
+    --set bookie.resources.limits.cpu=3 \
+    --set bookie.configData.journalSyncData="false" \
+    --set bookie.configData.journalAdaptiveGroupWrites="true"
 
 echo "Now we sleep for 600 seconds and allow pulsar to stabilise"
 sleep 600
@@ -61,10 +67,10 @@ echo "WARN: 600s seconds is not often enough for pulsar to stabilise, you may ha
 sleep 5
 kubectl get po -A -w
 
-./bin/pulsar-admin topics create-partitioned-topic persistent://public/default/hammer-topic --partitions 16
+# ./bin/pulsar-admin topics create-partitioned-topic persistent://public/default/hammer-topic --partitions 16
 
-./bin/pulsar-admin topics set-message-ttl persistent://public/default/hammer-topic --ttl 5
+# ./bin/pulsar-admin topics set-message-ttl persistent://public/default/hammer-topic --ttl 5
 
-./bin/pulsar-admin topics set-backlog-quota persistent://public/default/hammer-topic --limit 5G --policy consumer_backlog_eviction
+# ./bin/pulsar-admin topics set-backlog-quota persistent://public/default/hammer-topic --limit 5G --policy consumer_backlog_eviction
 
 echo "Now, go do your helm thing and run pulsar-hammer application"
