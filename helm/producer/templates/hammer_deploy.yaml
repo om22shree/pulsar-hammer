@@ -23,7 +23,7 @@ spec:
         dapr.io/sidecar-cpu-request: "1.0"
         dapr.io/sidecar-memory-limit: "1Gi"
         dapr.io/sidecar-memory-request: "512Mi"
-        dapr.io/sidecar-liveness-probe-delay-seconds: "60" # Give it a full minute
+        dapr.io/sidecar-liveness-probe-delay-seconds: "60"
         dapr.io/sidecar-readiness-probe-delay-seconds: "60"
         dapr.io/sidecar-liveness-probe-period-seconds: "10"
     spec:
@@ -36,6 +36,16 @@ spec:
           value: {{ .Values.mode | quote }}
         - name: APP_PORT
           value: "50051"
+        - name: PULSAR_TENANT
+          value: {{ .Values.hammerConfig.pulsar.tenant | quote }}
+        - name: PULSAR_NAMESPACE
+          value: {{ .Values.hammerConfig.pulsar.namespace | quote }}
+        - name: TOPIC_NAME
+          value: {{ .Values.hammerConfig.pulsar.topic | quote }}
+        - name: RATE_LIMIT
+          value: {{ .Values.hammerConfig.producerRateLimit | quote }}
+        - name: PUBSUB_NAME
+          value: {{ .Values.hammerConfig.pubsubName | quote }}
         
         readinessProbe:
           tcpSocket:

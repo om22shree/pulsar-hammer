@@ -15,3 +15,11 @@ resources:
   requests:
     cpu: "4"
     memory: "2Gi"
+
+hammerConfig:
+  pulsar:
+    tenant: "public"
+    namespace: "default"
+    topic: "hammer-topic"
+  producerRateLimit: 15000
+  pubsubName: "pulsar-pubsub"
