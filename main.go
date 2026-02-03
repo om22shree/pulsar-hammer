@@ -21,11 +21,10 @@ import (
 )
 
 const (
-	poolSize        = 100              // Connection pool size
-	logInterval     = 100000           // Log every 100k messages
-	maxConcurrency  = 1000             // Max in-flight messages
-	publishTimeout  = 20 * time.Second // Timeout per publish
-	batchSize       = 100              // Messages per batch goroutine
+	poolSize        = 100
+	logInterval     = 100000
+	maxConcurrency  = 1000
+	publishTimeout  = 20 * time.Second
 	clientInitDelay = 50 * time.Millisecond
 )
 
@@ -67,7 +66,7 @@ func main() {
 		runProducer()
 	} else {
 		log.Printf("CONSUMER: Starting on %s. Target: %s", appPort, topicFQTN)
-		go startHealthServer(appPort)
+		go logStats()
 		runConsumer(appPort)
 	}
 }
@@ -101,6 +100,7 @@ func logStats() {
 	lastCount := uint64(0)
 	lastErrors := uint64(0)
 	lastTimeouts := uint64(0)
+	startTime := time.Now()
 
 	for range ticker.C {
 		current := atomic.LoadUint64(&messageCount)
@@ -111,8 +111,11 @@ func logStats() {
 		newErrors := errors - lastErrors
 		newTimeouts := timeouts - lastTimeouts
 
-		log.Printf("STATS: TPS=%.1f | Total=%d | Errors=%d (+%d) | Timeouts=%d (+%d)",
-			tps, current, errors, newErrors, timeouts, newTimeouts)
+		elapsed := time.Since(startTime).Seconds()
+		avgTPS := float64(current) / elapsed
+
+		log.Printf("STATS: TPS=%.1f | Avg=%.1f | Total=%d | Errors=%d (+%d) | Timeouts=%d (+%d)",
+			tps, avgTPS, current, errors, newErrors, timeouts, newTimeouts)
 
 		lastCount = current
 		lastErrors = errors
@@ -167,35 +170,26 @@ func runProducer() {
 	pool := NewClientPool(poolSize)
 	defer pool.Close()
 
-	// Rate limiter with minimal burst
 	burstSize := 200
 	limiter := rate.NewLimiter(rate.Limit(rateLimit), burstSize)
-
-	// Semaphore for concurrency control
 	sem := make(chan struct{}, maxConcurrency)
 
-	// Worker pool pattern - batch processing
-	numWorkers := maxConcurrency / batchSize
+	numWorkers := 50
 	workChan := make(chan struct{}, numWorkers*2)
 
-	log.Printf("Starting %d workers, each processing %d messages", numWorkers, batchSize)
+	log.Printf("Starting %d workers", numWorkers)
 
-	// Start worker pool
 	for i := 0; i < numWorkers; i++ {
 		go worker(pool, sem, workChan)
 	}
 
-	// Main loop - distribute work
 	for {
 		select {
 		case workChan <- struct{}{}:
-			// Work dispatched
 		default:
-			// Channel full, apply backpressure
 			time.Sleep(time.Millisecond)
 		}
 
-		// Rate limiting
 		if err := limiter.Wait(context.Background()); err != nil {
 			log.Printf("Rate limiter error: %v", err)
 		}
@@ -204,27 +198,18 @@ func runProducer() {
 
 func worker(pool *ClientPool, sem chan struct{}, workChan chan struct{}) {
 	for range workChan {
-		// Acquire semaphore slot
 		sem <- struct{}{}
 
-		// Get client from pool
 		c := pool.Get()
-
-		// Get payload from pool
 		p := payloadPool.Get().([]byte)
-
-		// Create context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
 
-		// Publish message
 		err := c.PublishEvent(ctx, pubsubName, topicFQTN, p)
 
-		// Cleanup
 		cancel()
 		payloadPool.Put(p)
 		<-sem
 
-		// Track results
 		if err == nil {
 			newVal := atomic.AddUint64(&messageCount, 1)
 			if newVal%logInterval == 0 {
@@ -236,7 +221,6 @@ func worker(pool *ClientPool, sem chan struct{}, workChan chan struct{}) {
 				atomic.AddUint64(&timeoutCount, 1)
 			}
 
-			// Log sampling (1 in 100 errors)
 			if atomic.LoadUint64(&errorCount)%100 == 1 {
 				log.Printf("WARN: Publish error: %v", err)
 			}
@@ -255,14 +239,12 @@ func runConsumer(appPort string) {
 		Topic:      topicFQTN,
 		Route:      "/events",
 		Metadata: map[string]string{
-			"maxConcurrentHandlers": "1000", // Parallel processing
+			"maxConcurrentHandlers": "1000",
 		},
 	}
 
-	// Use a buffered channel for async processing
 	msgChan := make(chan *common.TopicEvent, 10000)
 
-	// Start processor goroutines
 	numProcessors := 100
 	log.Printf("Starting %d message processors", numProcessors)
 	for i := 0; i < numProcessors; i++ {
@@ -279,12 +261,10 @@ func runConsumer(appPort string) {
 	err = s.AddTopicEventHandler(sub, func(ctx context.Context, e *common.TopicEvent) (retry bool, err error) {
 		select {
 		case msgChan <- e:
-			// Message queued successfully
 		default:
-			// Buffer full - apply backpressure by processing inline
 			atomic.AddUint64(&messageCount, 1)
 		}
-		return false, nil // Always ACK immediately
+		return false, nil
 	})
 
 	if err != nil {
