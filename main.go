@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	poolSize    = 10     // Concurrent gRPC connections to Dapr
+	poolSize    = 100    // Concurrent gRPC connections to Dapr
 	logInterval = 100000 // Log every 100k messages
 )
 
