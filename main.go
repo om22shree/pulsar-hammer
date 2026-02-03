@@ -30,9 +30,9 @@ var (
 		New: func() any { return make([]byte, 10240) }, // 10KB payload
 	}
 	messageCount uint64
-	pubsubName string
-	topicFQTN  string
-	rateLimit  float64
+	pubsubName   string
+	topicFQTN    string
+	rateLimit    float64
 )
 
 func main() {
@@ -42,10 +42,10 @@ func main() {
 		appPort = "50051"
 	}
 
-	tenant := getEnv("PULSAR_TENANT", "public")
-	namespace := getEnv("PULSAR_NAMESPACE", "default")
+	// tenant := getEnv("PULSAR_TENANT", "public")
+	// namespace := getEnv("PULSAR_NAMESPACE", "default")
 	topic := getEnv("TOPIC_NAME", "hammer-topic")
-	topicFQTN = fmt.Sprintf("persistent://%s/%s/%s", tenant, namespace, topic)
+	topicFQTN = fmt.Sprintf("%s", topic)
 	pubsubName = getEnv("PUBSUB_NAME", "pulsar-pubsub")
 	rateLimitStr := getEnv("RATE_LIMIT", "15000")
 	var err error
@@ -104,7 +104,7 @@ func runProducer() {
 	for {
 		limiter.Wait(context.Background())
 		sem <- struct{}{}
-		
+
 		go func(id uint64) {
 			defer func() { <-sem }()
 			p := payloadPool.Get().([]byte)
@@ -143,7 +143,7 @@ func runConsumer(port string) {
 		}
 		return false, nil
 	})
-	
+
 	if err := s.Start(); err != nil {
 		log.Fatalf("failed to start consumer: %v", err)
 	}
