@@ -4,7 +4,6 @@ go 1.25.4
 
 require (
 	github.com/dapr/go-sdk v1.13.0
-	golang.org/x/time v0.14.0
 	google.golang.org/grpc v1.73.0
 )
 

@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,18 +13,18 @@ import (
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
 	daprd "github.com/dapr/go-sdk/service/grpc"
-	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 const (
-	poolSize        = 100
-	logInterval     = 100000
-	maxConcurrency  = 1000
-	publishTimeout  = 20 * time.Second
-	clientInitDelay = 50 * time.Millisecond
+	poolSize        = 300
+	logInterval     = 500000
+	maxConcurrency  = 5000
+	publishTimeout  = 10 * time.Second
+	clientInitDelay = 20 * time.Millisecond
+	statsInterval   = 10 * time.Second
 )
 
 var (
@@ -37,7 +36,6 @@ var (
 	timeoutCount uint64
 	pubsubName   string
 	topicFQTN    string
-	rateLimit    float64
 )
 
 func main() {
@@ -50,22 +48,17 @@ func main() {
 	topic := getEnv("TOPIC_NAME", "hammer-topic")
 	topicFQTN = fmt.Sprintf("%s", topic)
 	pubsubName = getEnv("PUBSUB_NAME", "pulsar-pubsub")
-	rateLimitStr := getEnv("RATE_LIMIT", "15000")
-	var err error
-	rateLimit, err = strconv.ParseFloat(rateLimitStr, 64)
-	if err != nil {
-		rateLimit = 15000
-	}
 
 	if mode == "producer" {
-		log.Printf("PRODUCER: Starting. Target: %s | Rate: %.0f TPS", topicFQTN, rateLimit)
+		log.Printf("PRODUCER: Full throttle mode")
+		log.Printf("Target: %s | Concurrency: %d | Pool: %d", topicFQTN, maxConcurrency, poolSize)
 		go startHealthServer(appPort)
 		go logStats()
-		log.Printf("PRODUCER: Waiting 10s for sidecar stabilization...")
+		log.Printf("Waiting 10s for sidecar stabilization")
 		time.Sleep(10 * time.Second)
 		runProducer()
 	} else {
-		log.Printf("CONSUMER: Starting on %s. Target: %s", appPort, topicFQTN)
+		log.Printf("CONSUMER: Starting on %s", appPort)
 		go logStats()
 		runConsumer(appPort)
 	}
@@ -94,7 +87,7 @@ func startHealthServer(port string) {
 }
 
 func logStats() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(statsInterval)
 	defer ticker.Stop()
 
 	lastCount := uint64(0)
@@ -107,14 +100,15 @@ func logStats() {
 		errors := atomic.LoadUint64(&errorCount)
 		timeouts := atomic.LoadUint64(&timeoutCount)
 
-		tps := float64(current-lastCount) / 10.0
+		intervalSeconds := statsInterval.Seconds()
+		tps := float64(current-lastCount) / intervalSeconds
 		newErrors := errors - lastErrors
 		newTimeouts := timeouts - lastTimeouts
 
 		elapsed := time.Since(startTime).Seconds()
 		avgTPS := float64(current) / elapsed
 
-		log.Printf("STATS: TPS=%.1f | Avg=%.1f | Total=%d | Errors=%d (+%d) | Timeouts=%d (+%d)",
+		log.Printf("STATS: TPS=%.0f Avg=%.0f Total=%d Errors=%d(+%d) Timeouts=%d(+%d)",
 			tps, avgTPS, current, errors, newErrors, timeouts, newTimeouts)
 
 		lastCount = current
@@ -126,7 +120,6 @@ func logStats() {
 type ClientPool struct {
 	clients []client.Client
 	index   uint64
-	mu      sync.RWMutex
 }
 
 func NewClientPool(size int) *ClientPool {
@@ -134,33 +127,57 @@ func NewClientPool(size int) *ClientPool {
 		clients: make([]client.Client, 0, size),
 	}
 
-	log.Printf("Initializing %d Dapr clients...", size)
-	for i := 0; i < size; i++ {
-		c, err := client.NewClient()
-		if err != nil {
-			log.Fatalf("Failed to init dapr client %d: %v", i, err)
-		}
-		pool.clients = append(pool.clients, c)
+	log.Printf("Initializing %d Dapr clients", size)
 
-		if (i+1)%10 == 0 {
-			log.Printf("Initialized %d/%d clients", i+1, size)
-		}
-		time.Sleep(clientInitDelay)
+	var wg sync.WaitGroup
+	clientChan := make(chan client.Client, size)
+	errChan := make(chan error, size)
+
+	batchSize := 20
+	for i := 0; i < size; i += batchSize {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+			end := start + batchSize
+			if end > size {
+				end = size
+			}
+			for j := start; j < end; j++ {
+				c, err := client.NewClient()
+				if err != nil {
+					errChan <- err
+					return
+				}
+				clientChan <- c
+				time.Sleep(clientInitDelay)
+			}
+		}(i)
 	}
-	log.Printf("All %d clients initialized successfully", size)
+
+	go func() {
+		wg.Wait()
+		close(clientChan)
+		close(errChan)
+	}()
+
+	for c := range clientChan {
+		pool.clients = append(pool.clients, c)
+	}
+
+	if len(pool.clients) < size {
+		log.Fatalf("Failed to initialize all clients. Got %d/%d", len(pool.clients), size)
+	}
+
+	log.Printf("All %d clients initialized", len(pool.clients))
 	return pool
 }
 
 func (p *ClientPool) Get() client.Client {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	idx := atomic.AddUint64(&p.index, 1)
 	return p.clients[idx%uint64(len(p.clients))]
 }
 
 func (p *ClientPool) Close() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	for _, c := range p.clients {
 		c.Close()
 	}
@@ -170,61 +187,37 @@ func runProducer() {
 	pool := NewClientPool(poolSize)
 	defer pool.Close()
 
-	burstSize := 200
-	limiter := rate.NewLimiter(rate.Limit(rateLimit), burstSize)
 	sem := make(chan struct{}, maxConcurrency)
 
-	numWorkers := 50
-	workChan := make(chan struct{}, numWorkers*2)
-
-	log.Printf("Starting %d workers", numWorkers)
-
-	for i := 0; i < numWorkers; i++ {
-		go worker(pool, sem, workChan)
-	}
+	log.Printf("Starting full throttle producer")
 
 	for {
-		select {
-		case workChan <- struct{}{}:
-		default:
-			time.Sleep(time.Millisecond)
-		}
-
-		if err := limiter.Wait(context.Background()); err != nil {
-			log.Printf("Rate limiter error: %v", err)
-		}
-	}
-}
-
-func worker(pool *ClientPool, sem chan struct{}, workChan chan struct{}) {
-	for range workChan {
 		sem <- struct{}{}
 
-		c := pool.Get()
-		p := payloadPool.Get().([]byte)
-		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
+		go func() {
+			defer func() { <-sem }()
 
-		err := c.PublishEvent(ctx, pubsubName, topicFQTN, p)
+			c := pool.Get()
+			p := payloadPool.Get().([]byte)
+			ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
 
-		cancel()
-		payloadPool.Put(p)
-		<-sem
+			err := c.PublishEvent(ctx, pubsubName, topicFQTN, p)
 
-		if err == nil {
-			newVal := atomic.AddUint64(&messageCount, 1)
-			if newVal%logInterval == 0 {
-				log.Printf("PRODUCER: Sent %d messages total", newVal)
+			cancel()
+			payloadPool.Put(p)
+
+			if err == nil {
+				newVal := atomic.AddUint64(&messageCount, 1)
+				if newVal%logInterval == 0 {
+					log.Printf("PRODUCER: Sent %d messages", newVal)
+				}
+			} else {
+				atomic.AddUint64(&errorCount, 1)
+				if ctx.Err() == context.DeadlineExceeded {
+					atomic.AddUint64(&timeoutCount, 1)
+				}
 			}
-		} else {
-			atomic.AddUint64(&errorCount, 1)
-			if ctx.Err() == context.DeadlineExceeded {
-				atomic.AddUint64(&timeoutCount, 1)
-			}
-
-			if atomic.LoadUint64(&errorCount)%100 == 1 {
-				log.Printf("WARN: Publish error: %v", err)
-			}
-		}
+		}()
 	}
 }
 
@@ -239,20 +232,20 @@ func runConsumer(appPort string) {
 		Topic:      topicFQTN,
 		Route:      "/events",
 		Metadata: map[string]string{
-			"maxConcurrentHandlers": "1000",
+			"maxConcurrentHandlers": "5000",
 		},
 	}
 
-	msgChan := make(chan *common.TopicEvent, 10000)
+	msgChan := make(chan *common.TopicEvent, 50000)
 
-	numProcessors := 100
+	numProcessors := 500
 	log.Printf("Starting %d message processors", numProcessors)
 	for i := 0; i < numProcessors; i++ {
 		go func() {
 			for range msgChan {
 				newVal := atomic.AddUint64(&messageCount, 1)
 				if newVal%logInterval == 0 {
-					log.Printf("CONSUMER: Received %d messages total", newVal)
+					log.Printf("CONSUMER: Received %d messages", newVal)
 				}
 			}
 		}()
