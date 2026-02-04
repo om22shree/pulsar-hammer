@@ -1,0 +1,12 @@
+image: "om22shree/pulsar-hammer:no-DAPR"
+pulsar:
+  url: "pulsar://pulsar-proxy.pulsar.svc.cluster.local:6650"
+  topic: "hammer-topic"
+  tokenSecretName: "pulsar-auth"
+resources:
+  producer:
+    cpu: "6"
+    memory: "4Gi"
+  consumer:
+    cpu: "4"
+    memory: "2Gi"

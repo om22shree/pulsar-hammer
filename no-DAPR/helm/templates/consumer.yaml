@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hammer-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hammer-consumer
+  template:
+    metadata:
+      labels:
+        app: hammer-consumer
+    spec:
+      containers:
+        - name: hammer
+          image: {{ .Values.image | quote }}
+          env:
+            - name: MODE
+              value: "consumer"
+            - name: PULSAR_URL
+              value: {{ .Values.pulsar.url | quote }}
+            - name: TOPIC_NAME
+              value: {{ .Values.pulsar.topic | quote }}
+            - name: PULSAR_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.pulsar.tokenSecretName }}
+                  key: token
+          ports:
+            - name: health
+              containerPort: 50051
+          resources:
+            {{- toYaml .Values.resources.consumer | nindent 12 }}

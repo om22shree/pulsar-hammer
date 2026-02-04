@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hammer-consumer-svc
+spec:
+  selector:
+    app: hammer-consumer
+  ports:
+    - protocol: TCP
+      port: 50051
+      targetPort: 50051

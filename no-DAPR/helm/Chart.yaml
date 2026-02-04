@@ -1,0 +1,4 @@
+apiVersion: v2
+name: pulsar-hammer
+version: 1.0.0
+description: "High-throughput Pulsar stress-tester without the bloat"
