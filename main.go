@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,11 +20,11 @@ import (
 )
 
 const (
-	poolSize        = 300
-	logInterval     = 500000
+	poolSize = 100
+	// logInterval     = 500000
 	maxConcurrency  = 5000
-	publishTimeout  = 10 * time.Second
-	clientInitDelay = 20 * time.Millisecond
+	publishTimeout  = 30 * time.Second
+	clientInitDelay = 50 * time.Millisecond
 	statsInterval   = 10 * time.Second
 )
 
@@ -39,6 +40,8 @@ var (
 )
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	mode := os.Getenv("MODE")
 	appPort := os.Getenv("APP_PORT")
 	if appPort == "" {
@@ -50,12 +53,13 @@ func main() {
 	pubsubName = getEnv("PUBSUB_NAME", "pulsar-pubsub")
 
 	if mode == "producer" {
-		log.Printf("PRODUCER: Full throttle mode")
+		log.Printf("PRODUCER: Dapr max throughput mode")
 		log.Printf("Target: %s | Concurrency: %d | Pool: %d", topicFQTN, maxConcurrency, poolSize)
 		go startHealthServer(appPort)
 		go logStats()
-		log.Printf("Waiting 10s for sidecar stabilization")
-		time.Sleep(10 * time.Second)
+		go monitorGoroutines()
+		log.Printf("Waiting 15s for sidecar stabilization")
+		time.Sleep(15 * time.Second)
 		runProducer()
 	} else {
 		log.Printf("CONSUMER: Starting on %s", appPort)
@@ -80,7 +84,6 @@ func startHealthServer(port string) {
 	hs := health.NewServer()
 	hs.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(gs, hs)
-	log.Printf("Health server listening on %s", port)
 	if err := gs.Serve(lis); err != nil {
 		log.Printf("Health server error: %v", err)
 	}
@@ -108,12 +111,26 @@ func logStats() {
 		elapsed := time.Since(startTime).Seconds()
 		avgTPS := float64(current) / elapsed
 
-		log.Printf("STATS: TPS=%.0f Avg=%.0f Total=%d Errors=%d(+%d) Timeouts=%d(+%d)",
-			tps, avgTPS, current, errors, newErrors, timeouts, newTimeouts)
+		var errorRate float64
+		if current > 0 {
+			errorRate = float64(errors) / float64(current) * 100
+		}
+
+		log.Printf("STATS: TPS=%.0f Avg=%.0f Total=%d Errors=%d(+%d/%.2f%%) Timeouts=%d(+%d)",
+			tps, avgTPS, current, errors, newErrors, errorRate, timeouts, newTimeouts)
 
 		lastCount = current
 		lastErrors = errors
 		lastTimeouts = timeouts
+	}
+}
+
+func monitorGoroutines() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		log.Printf("RUNTIME: Goroutines=%d", runtime.NumGoroutine())
 	}
 }
 
@@ -131,9 +148,8 @@ func NewClientPool(size int) *ClientPool {
 
 	var wg sync.WaitGroup
 	clientChan := make(chan client.Client, size)
-	errChan := make(chan error, size)
 
-	batchSize := 20
+	batchSize := 10
 	for i := 0; i < size; i += batchSize {
 		wg.Add(1)
 		go func(start int) {
@@ -145,8 +161,8 @@ func NewClientPool(size int) *ClientPool {
 			for j := start; j < end; j++ {
 				c, err := client.NewClient()
 				if err != nil {
-					errChan <- err
-					return
+					log.Printf("Failed to create client %d: %v", j, err)
+					continue
 				}
 				clientChan <- c
 				time.Sleep(clientInitDelay)
@@ -157,7 +173,6 @@ func NewClientPool(size int) *ClientPool {
 	go func() {
 		wg.Wait()
 		close(clientChan)
-		close(errChan)
 	}()
 
 	for c := range clientChan {
@@ -168,7 +183,7 @@ func NewClientPool(size int) *ClientPool {
 		log.Fatalf("Failed to initialize all clients. Got %d/%d", len(pool.clients), size)
 	}
 
-	log.Printf("All %d clients initialized", len(pool.clients))
+	log.Printf("Initialized %d clients successfully", len(pool.clients))
 	return pool
 }
 
@@ -189,7 +204,7 @@ func runProducer() {
 
 	sem := make(chan struct{}, maxConcurrency)
 
-	log.Printf("Starting full throttle producer")
+	log.Printf("Starting producer with max concurrency")
 
 	for {
 		sem <- struct{}{}
@@ -199,18 +214,15 @@ func runProducer() {
 
 			c := pool.Get()
 			p := payloadPool.Get().([]byte)
+
 			ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
-
 			err := c.PublishEvent(ctx, pubsubName, topicFQTN, p)
-
 			cancel()
+
 			payloadPool.Put(p)
 
 			if err == nil {
-				newVal := atomic.AddUint64(&messageCount, 1)
-				if newVal%logInterval == 0 {
-					log.Printf("PRODUCER: Sent %d messages", newVal)
-				}
+				atomic.AddUint64(&messageCount, 1)
 			} else {
 				atomic.AddUint64(&errorCount, 1)
 				if ctx.Err() == context.DeadlineExceeded {
@@ -236,17 +248,14 @@ func runConsumer(appPort string) {
 		},
 	}
 
-	msgChan := make(chan *common.TopicEvent, 50000)
+	msgChan := make(chan *common.TopicEvent, 100000)
 
-	numProcessors := 500
+	numProcessors := 1000
 	log.Printf("Starting %d message processors", numProcessors)
 	for i := 0; i < numProcessors; i++ {
 		go func() {
 			for range msgChan {
-				newVal := atomic.AddUint64(&messageCount, 1)
-				if newVal%logInterval == 0 {
-					log.Printf("CONSUMER: Received %d messages", newVal)
-				}
+				atomic.AddUint64(&messageCount, 1)
 			}
 		}()
 	}
