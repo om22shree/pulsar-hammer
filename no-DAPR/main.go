@@ -18,9 +18,13 @@ import (
 )
 
 const (
-	maxConcurrency = 15000 // Match target TPS
+	maxConcurrency = 15000
 	statsInterval  = 10 * time.Second
 	payloadSize    = 10240 // 10KB
+
+	// Batch configuration to stay under 5MB limit
+	maxBatchMessages = 400             // 400 × 10KB = 4MB raw
+	maxBatchSize     = 4 * 1024 * 1024 // 4MB limit
 )
 
 var (
@@ -42,8 +46,6 @@ var (
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	// Set GOGC for better memory management under high throughput
 	os.Setenv("GOGC", "200")
 
 	mode := os.Getenv("MODE")
@@ -56,8 +58,8 @@ func main() {
 		URL:                     pulsarURL,
 		OperationTimeout:        30 * time.Second,
 		ConnectionTimeout:       30 * time.Second,
-		MaxConnectionsPerBroker: 5,                 // Increase connection pool
-		MemoryLimitBytes:        512 * 1024 * 1024, // 512MB memory limit
+		MaxConnectionsPerBroker: 5,
+		MemoryLimitBytes:        512 * 1024 * 1024,
 	}
 
 	if token != "" {
@@ -73,7 +75,8 @@ func main() {
 	go logStats()
 
 	if mode == "producer" {
-		log.Printf("STARTING PRODUCER - TARGET 15K TPS - Payload: %d bytes", payloadSize)
+		log.Printf("STARTING PRODUCER - TARGET 15K TPS - Payload: %d bytes, MaxBatch: %d msgs",
+			payloadSize, maxBatchMessages)
 		go startHealthServer(appPort)
 		runProducer(client, topic)
 	} else {
@@ -87,8 +90,8 @@ func runProducer(client pulsar.Client, topic string) {
 		Topic:                   topic,
 		MaxPendingMessages:      50000,
 		BatchingMaxPublishDelay: 1 * time.Millisecond,
-		BatchingMaxMessages:     5000,
-		BatchingMaxSize:         10 * 1024 * 1024,
+		BatchingMaxMessages:     maxBatchMessages, // 400 messages
+		BatchingMaxSize:         maxBatchSize,     // 4MB
 		CompressionType:         pulsar.LZ4,
 		DisableBlockIfQueueFull: false,
 		SendTimeout:             30 * time.Second,
@@ -108,14 +111,19 @@ func runProducer(client pulsar.Client, topic string) {
 
 	sem := make(chan struct{}, maxConcurrency)
 
-	// Use multiple goroutines for sending
+	// Multiple sender goroutines
 	numSenders := runtime.NumCPU() * 2
+	if numSenders > 32 {
+		numSenders = 32 // Cap at reasonable limit
+	}
+
 	var wg sync.WaitGroup
 
 	for i := 0; i < numSenders; i++ {
 		wg.Add(1)
-		go func() {
+		go func(senderID int) {
 			defer wg.Done()
+
 			for {
 				sem <- struct{}{}
 				p := payloadPool.Get().([]byte)
@@ -128,12 +136,16 @@ func runProducer(client pulsar.Client, topic string) {
 
 					if err != nil {
 						atomic.AddUint64(&errorCount, 1)
+						// Log specific errors for debugging
+						if atomic.LoadUint64(&errorCount)%100 == 0 {
+							log.Printf("Send error (total: %d): %v", atomic.LoadUint64(&errorCount), err)
+						}
 					} else {
 						atomic.AddUint64(&messageCount, 1)
 					}
 				})
 			}
-		}()
+		}(i)
 	}
 
 	wg.Wait()
@@ -144,7 +156,7 @@ func runConsumer(client pulsar.Client, topic string) {
 		Topic:                       topic,
 		SubscriptionName:            "hammer-shared-sub",
 		Type:                        pulsar.Shared,
-		ReceiverQueueSize:           10000, // Increased from 5000
+		ReceiverQueueSize:           10000,
 		NackRedeliveryDelay:         1 * time.Second,
 		SubscriptionInitialPosition: pulsar.SubscriptionPositionLatest,
 	})
@@ -153,7 +165,7 @@ func runConsumer(client pulsar.Client, topic string) {
 	}
 	defer consumer.Close()
 
-	// Use multiple goroutines for consuming
+	// Multiple consumer goroutines
 	numConsumers := runtime.NumCPU()
 	var wg sync.WaitGroup
 
@@ -192,8 +204,13 @@ func logStats() {
 		avg := float64(curr) / elapsed
 		throughputMBs := (instantTPS * payloadSize) / (1024 * 1024)
 
-		log.Printf("[STATS] Instant TPS: %.0f | Avg TPS: %.0f | Throughput: %.2f MB/s | Total: %d | Errors: %d | CPU: %d",
-			instantTPS, avg, throughputMBs, curr, errs, runtime.NumCPU())
+		errorRate := float64(0)
+		if curr > 0 {
+			errorRate = float64(errs) / float64(curr+errs) * 100
+		}
+
+		log.Printf("[STATS] Instant TPS: %.0f | Avg TPS: %.0f | Throughput: %.2f MB/s | Total: %d | Errors: %d (%.2f%%) | CPU: %d",
+			instantTPS, avg, throughputMBs, curr, errs, errorRate, runtime.NumCPU())
 
 		lastCount = curr
 		lastTime = now
